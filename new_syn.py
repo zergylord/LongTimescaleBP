@@ -19,9 +19,9 @@ mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
 
 in_dim = 784
 hid_dim = 256
-embed_dim = 64
+embed_dim = 10
 out_dim = 10
-n_mem = 128
+n_mem = 4
 eps = 1e-10
 def make_syn_net(inputs,tie_weights=False):
     syn_hid1 = linear(tf.concat(1,inputs),hid_dim,'syn_hid1',tf.nn.relu,tied=tie_weights)
@@ -71,15 +71,16 @@ everything in memory, should be storing this state instead
 syn_out_copy = make_syn_net([tf.tile(mem_embed_blob,[n_mem,1]),tf.tile(mem_y_blob,[n_mem,1]),mem_embed_,mem_y_],True)
 mem_embed_grad = tf.gradients(class_loss,mem_embed_)[0]
 '''
-syn_out_copy = make_syn_net([mem_embed_,mem_y_],True)
+oldest_mem_embed_grad = tf.placeholder(tf.float32,shape=[embed_dim])
+syn_out_copy = make_syn_net([tf.expand_dims(mem_embed_[0],0),tf.expand_dims(mem_y_[0],0)],True)
 mem_embed_grad = tf.gradients(class_loss,mem_embed_)[0]
-grad_loss = tf.reduce_mean(tf.reduce_sum(tf.square(syn_out_copy
-    -tf.stop_gradient(mem_embed_grad)),1))
+grad_loss = tf.reduce_sum(tf.square(syn_out_copy
+    -tf.stop_gradient(oldest_mem_embed_grad+mem_embed_grad[0])))
 
 #loss = class_loss
 #loss = grad_loss + class_loss + syn_loss
 loss = grad_loss + syn_loss
-train_step = tf.train.AdamOptimizer(1e-4).minimize(loss)
+train_step = tf.train.AdamOptimizer(1e-3).minimize(loss)
 #train_step = tf.train.GradientDescentOptimizer(1e-3).minimize(loss)
 
 sess = tf.Session()
@@ -89,7 +90,7 @@ cumacc = 0.0
 cumloss = np.zeros((3,))
 cur_los = np.zeros((3,))
 from collections import deque
-M = {'embed': deque(np.zeros((n_mem,embed_dim))),'label': deque(np.zeros((n_mem,out_dim)))}
+M = {'embed': deque(np.zeros((n_mem,embed_dim))),'label': deque(np.zeros((n_mem,out_dim))),'grad':deque(np.zeros((n_mem,embed_dim)))}
 for i in range(n_mem):
     cur_input,cur_output = mnist.train.next_batch(1)
     M['embed'].popleft()
@@ -99,13 +100,23 @@ for i in range(n_mem):
 acc_hist = []
 loss_hist = []
 rho = .999
+omeg = np.zeros((embed_dim,))
 for i in range(int(1e5)):
     cur_input,cur_output = mnist.train.next_batch(1)
-    _,*cur_loss,cur_acc,cur_embed = sess.run([train_step,class_loss,syn_loss,grad_loss,acc,embed],feed_dict={x_:cur_input,y_:cur_output,mem_embed_:M['embed'],mem_y_:M['label']})
+    _,*cur_loss,cur_acc,cur_embed,cur_syn_grad_grads = sess.run([train_step,class_loss,syn_loss,grad_loss,acc,embed,mem_embed_grad],
+            feed_dict={oldest_mem_embed_grad:omeg,x_:cur_input,y_:cur_output,mem_embed_:M['embed'],mem_y_:M['label']})
     M['embed'].popleft()
     M['embed'].append(cur_embed[0])
     M['label'].popleft()
     M['label'].append(np.copy(cur_output)[0])
+    for j in range(len(M['grad'])):
+        M['grad'][j] += 1 #cur_syn_grad_grads[j]
+    print('hi',M['grad'][0],'ther')
+    M['grad'].popleft()
+    M['grad'].append(np.copy(cur_syn_grad_grads[-1]))
+    print(cur_syn_grad_grads)
+    plt.pause(1)
+    print('foo',M['grad'][-1])
     cumloss*=rho
     cumacc*=rho
     cumloss+=np.asarray(cur_loss)*(1-rho)
